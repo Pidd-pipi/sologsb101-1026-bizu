@@ -67,8 +67,8 @@ npm run preview    # 本地预览构建产物（http://localhost:22826）
 | --- | --- | --- | --- |
 | `/parcels` | 地块与品种台账 | Parcel、Batch | 新建/编辑/删除地块、按品种与朝向筛选、回显在罐批次数与累计入罐量、筛选同步 URL query |
 | `/tanks` | 发酵罐容量配置与罐位看板 | Tank、Batch | 按材质/温控/罐位筛选、罐位占用冲突校验、清洗状态流转 |
-| `/batches` | 入罐登记与发酵读数 | Batch、Reading、Parcel、Tank | 绑定地块与罐入罐、逐日录比重/温度/糖度、趋势条、超温标记、出罐释放罐位 |
-| `/operations` | 倒罐与压帽作业编排 | Operation、Batch | 按日期排班、拖拽调序（含上下移按钮）、指派操作人、完成回写批次最近作业时间 |
+| `/batches` | 入罐登记与发酵读数 | Batch、Reading、Trend、AuditLog | 绑定地块与罐入罐、逐日录比重/温度/糖度，读数版本化（改动/撤回带原因）、趋势条、超温/停滞/可转罐重算、版本追溯时间线 |
+| `/operations` | 倒罐与压帽作业编排 | Operation、Batch、Tank、Trend | 倒罐工单乐观锁排单、待复核工单复核、容量看板、排队差额、按日期排班与调序、完成后批次转罐并保留容量 |
 | `/mlf` | 苹果酸乳酸发酵跟踪 | Mlf、Batch、Reading | 启动苹乳、逐次录入苹果酸、低于阈值自动判定结束并联动批次状态 |
 | `/tasting` | 品评调配与批次档案 | Tasting 及全部模型 | 同批次多次品评并列对比、批次档案 JSON 导出、本地库版本查看与整库导入导出 |
 
@@ -90,11 +90,11 @@ sologsb101-1026/
     ├── public/favicon.svg
     └── src/
         ├── main.ts  App.vue  env.d.ts
-        ├── types/              # parcel.ts tank.ts batch.ts reading.ts operation.ts mlf.ts tasting.ts filter.ts
-        ├── stores/             # parcelStore tankStore batchStore operationStore mlfStore
-        ├── components/common/  # StageTag.vue FilterBar.vue StatBadge.vue EmptyPanel.vue
-        ├── hooks/              # useFermentTrend.ts useIdbTable.ts
-        ├── utils/              # gravity.ts db.ts export.ts seed.ts uuid.ts query.ts
+        ├── types/              # parcel.ts tank.ts batch.ts reading.ts operation.ts mlf.ts tasting.ts versioning.ts filter.ts
+        ├── stores/             # parcelStore tankStore batchStore readingStore operationStore mlfStore
+        ├── components/common/  # StageTag.vue FilterBar.vue StatBadge.vue EmptyPanel.vue VersionTimeline.vue
+        ├── hooks/              # useFermentTrend.ts useIdbTable.ts useTankCapacities.ts
+        ├── utils/              # gravity.ts trend.ts capacity.ts conflict.ts conflictDialog.ts db.ts export.ts seed.ts uuid.ts query.ts
         ├── pages/              # ParcelList TankBoard BatchReading OperationPlan MlfBoard TastingExport
         ├── styles/main.css
         └── router/index.ts
@@ -104,9 +104,12 @@ sologsb101-1026/
 
 ## 六、数据存储说明
 
-- **IndexedDB 库名**：`gbwinetank-db`（Dexie 封装），结构版本号 `version(1)`，并带 `upgrade()` 迁移逻辑（为历史行补齐行修订号与时间戳）。
-- **分表存储**：`parcels` 地块、`tanks` 发酵罐、`batches` 入罐批次、`readings` 发酵读数、`operations` 作业、`mlfs` 苹乳发酵、`tastings` 品评调配，共 7 张表；每行带 `revision` / `createdAt` / `updatedAt`。
-- **首屏自动播种**：`utils/db.ts` 的 `initDatabase()` 在 `parcels` 表为空时调用 `seedDatabase()`，灌入互相引用的三层演示数据（地块 → 发酵罐 → 批次 → 读数/作业/苹乳/品评），保证每个页面首次打开都有内容；播种幂等，清空后重进会重新播种。
+- **IndexedDB 库名**：`gbwinetank-db`（Dexie 封装），结构版本号 `version(2)`；v1 旧库打开时自动迁移（补读数行版本、批次 `readingVersion` 与倒罐工单字段，并回填趋势快照）。
+- **分表存储**：`parcels` 地块、`tanks` 发酵罐、`batches` 入罐批次、`readings` 发酵读数（复合索引 `[batchId+date]` 保证批次+日期唯一）、`operations` 作业 / 倒罐工单、`mlfs` 苹乳发酵、`tastings` 品评调配、`trends` 批次趋势快照、`auditlogs` 版本变更流水，共 9 张表；每行带 `revision` / `createdAt` / `updatedAt`。
+- **可追溯版本链**：读数带行版本号，批次带单调递增的 `readingVersion`；新增 / 改动 / 撤回（软删除）读数后，从受影响日期起重算停滞、超温、可转罐条件并写入趋势快照，依据过期的未完成倒罐工单自动退回「待复核」。全部变更写入 `auditlogs`（含前后值快照），在读数页「版本追溯」时间线可查。
+- **并发保存（两个浏览器窗口）**：读数保存与倒罐排单都基于打开时的读数版本做乐观锁；IndexedDB 事务跨窗口串行提交，基线过期的后保存方会被整体拒绝，弹窗列出冲突日期与受影响倒罐工单，不会出现「后保存覆盖新读数」。
+- **倒罐容量核算**：可转罐要求源罐批次液量不超过目标罐剩余容量；已完成倒罐占住的容量持续保留（批次当前位置以最近一次完成倒罐为准），已确认计划单先排先占；容量不足的工单进入「排队」并显示「还差多少升」，容量释放（出罐 / 完成倒罐 / 改罐容）后按日期顺序自动放行。
+- **首屏自动播种**：`utils/db.ts` 的 `initDatabase()` 在 `parcels` 表为空时调用 `seedDatabase()`，灌入互相引用的三层演示数据（地块 → 发酵罐 → 批次 → 读数/作业/苹乳/品评 + 趋势/流水），保证每个页面首次打开都有内容；播种幂等，清空后重进会重新播种。
 - **无后端**：没有 API 服务、没有数据库容器；容器本身无状态，不挂载任何卷。
 - **数据迁移**：在「品评与批次档案」页可导出整库 JSON 备份，或导出单批次档案；在其它设备用「导入备份」还原。
 - **级联规则**：删除地块会级联删除其下批次与批次的读数/作业/苹乳/品评并释放罐位；在罐批次不允许删除发酵罐。

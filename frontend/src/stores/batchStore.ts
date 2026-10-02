@@ -47,14 +47,24 @@ export const useBatchStore = defineStore('batch', () => {
   }
 
   /** 入罐登记：先校验罐位可分配，再把罐置为「在用」 */
-  async function createBatch(payload: Omit<Batch, 'id' | 'lastOperationAt'>): Promise<string> {
+  async function createBatch(
+    payload: Omit<Batch, 'id' | 'lastOperationAt' | 'readingVersion'>
+  ): Promise<string> {
     error.value = null
     if (!payload.parcelId) throw new Error('请选择地块')
     if (!payload.tankId) throw new Error('请选择发酵罐')
     await assertTankAssignable(payload.tankId, null)
     const now = Date.now()
     const id = createId('batch')
-    await putBatch({ ...payload, id, lastOperationAt: null, revision: ROW_REVISION, createdAt: now, updatedAt: now })
+    await putBatch({
+      ...payload,
+      id,
+      lastOperationAt: null,
+      readingVersion: 0,
+      revision: ROW_REVISION,
+      createdAt: now,
+      updatedAt: now
+    })
     await updateTank(payload.tankId, { state: '在用' })
     currentBatchId.value = id
     return id

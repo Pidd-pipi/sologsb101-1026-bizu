@@ -13,7 +13,8 @@ import {
   Loading,
   Remove,
   Sunny,
-  Timer
+  Timer,
+  Warning
 } from '@element-plus/icons-vue'
 
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'info'
@@ -42,6 +43,8 @@ const STYLES: Record<string, StageStyle> = {
   已出罐: { tone: 'success', icon: CircleCheck, color: '#3f8f6b' },
   计划: { tone: 'info', icon: Clock, color: '#7a8b99' },
   已完成: { tone: 'success', icon: CircleCheck, color: '#3f8f6b' },
+  排队: { tone: 'warning', icon: Timer, color: '#c9863c' },
+  待复核: { tone: 'danger', icon: Warning, color: '#c45656' },
   未启动: { tone: 'info', icon: Remove, color: '#9aa5ad' },
   进行中: { tone: 'warning', icon: Timer, color: '#c9863c' },
   起酵: { tone: 'primary', icon: Grape, color: '#8e6bbf' },

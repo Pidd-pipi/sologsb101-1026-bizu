@@ -40,7 +40,7 @@ function batchLabel(batchId: string): string {
 
 /** 该批次在苹乳期间的平均温度，用于判定苹乳是否具备条件 */
 function avgTemp(batchId: string): string {
-  const rows = readings.value.filter((row) => row.batchId === batchId)
+  const rows = readings.value.filter((row) => row.batchId === batchId && row.status === '有效')
   if (rows.length === 0) return '—'
   return `${(rows.reduce((sum, row) => sum + row.tempC, 0) / rows.length).toFixed(1)} ℃`
 }

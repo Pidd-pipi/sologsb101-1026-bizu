@@ -18,6 +18,12 @@ export interface Batch {
   state: BatchState
   /** 最近一次作业时间（由作业完成回写） */
   lastOperationAt: string | null
+  /**
+   * 批次读数版本号（单调递增）：
+   * 任意读数新增 / 改动 / 撤回成功后 +1。
+   * 倒罐工单保存时携带所依据的版本号，低于该值即视为过期改动，拒绝并报冲突。
+   */
+  readingVersion: number
 }
 
 export const BATCH_STATES: BatchState[] = ['酒精发酵', '苹乳发酵', '已出罐']
@@ -27,7 +33,7 @@ export function isBatchActive(batch: Pick<Batch, 'state'>): boolean {
   return batch.state !== '已出罐'
 }
 
-export function createEmptyBatch(): Omit<Batch, 'id' | 'lastOperationAt'> {
+export function createEmptyBatch(): Omit<Batch, 'id' | 'lastOperationAt' | 'readingVersion'> {
   return {
     parcelId: '',
     tankId: '',

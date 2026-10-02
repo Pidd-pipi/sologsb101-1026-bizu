@@ -11,6 +11,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import { db, updateBatch, type BatchRow, type ParcelRow, type TankRow } from '@/utils/db'
 import { useIdbTable } from '@/hooks/useIdbTable'
 import { useTankStore } from '@/stores/tankStore'
+import { useTankCapacities } from '@/hooks/useTankCapacities'
 import {
   TANK_MATERIALS,
   TANK_STATES,
@@ -32,6 +33,8 @@ const { rows: tanks, ready } = useIdbTable<TankRow>(() => db.tanks, {
 })
 const { rows: batches } = useIdbTable<BatchRow>(() => db.batches)
 const { rows: parcels } = useIdbTable<ParcelRow>(() => db.parcels)
+const { rows: operations } = useIdbTable<import('@/utils/db').OperationRow>(() => db.operations)
+const { capacities, freeWithReservations } = useTankCapacities(tanks, batches, operations)
 
 const selects: FilterSelectConfig[] = [
   { key: 'materials', label: '材质', options: TANK_MATERIALS.map((item) => ({ label: item, value: item })) },
@@ -251,6 +254,25 @@ watch(
           <template #default="{ row }">
             <span v-if="occupancyOf(row.id)">{{ batchLabel(occupancyOf(row.id)) }}</span>
             <span v-else class="muted">未占用</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="容量占用（含完成倒罐保留 / 计划预留）" min-width="240">
+          <template #default="{ row }">
+            <el-progress
+              :percentage="capacities.get(row.id)
+                ? Math.round((capacities.get(row.id)!.occupiedL / row.capacityL) * 100)
+                : 0"
+              :status="(freeWithReservations.get(row.id) ?? 0) === 0 ? 'exception' : undefined"
+              :stroke-width="12"
+            />
+            <span class="muted">
+              已保留 {{ capacities.get(row.id)?.occupiedL ?? 0 }}L ·
+              计划再预留
+              {{ operations
+                .filter((op) => op.type === '倒罐' && op.state === '计划' && op.targetTankId === row.id)
+                .reduce((sum, op) => sum + op.transferVolumeL, 0) }}L ·
+              可转余量 {{ freeWithReservations.get(row.id) ?? row.capacityL }}L
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">

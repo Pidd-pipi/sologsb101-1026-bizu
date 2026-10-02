@@ -56,17 +56,19 @@ export async function buildBatchArchive(batchId: string): Promise<BatchArchive> 
     listTastings()
   ])
   const readings = allReadings.filter((row) => row.batchId === batchId)
+  // 档案汇总结论只基于有效读数（已撤回行保留在 readings 中可追溯，但不参与统计）
+  const active = readings.filter((row) => row.status === '有效')
   const operations = allOperations.filter((row) => row.batchId === batchId)
   const tastings = allTastings.filter((row) => row.batchId === batchId)
 
   let declineSum = 0
-  for (let i = 1; i < readings.length; i += 1) {
+  for (let i = 1; i < active.length; i += 1) {
     const days =
-      (new Date(readings[i].date).getTime() - new Date(readings[i - 1].date).getTime()) / 86400000
-    declineSum += gravityDeclinePerDay(readings[i - 1].gravity, readings[i].gravity, days)
+      (new Date(active[i].date).getTime() - new Date(active[i - 1].date).getTime()) / 86400000
+    declineSum += gravityDeclinePerDay(active[i - 1].gravity, active[i].gravity, days)
   }
-  const first = readings[0]
-  const last = readings[readings.length - 1]
+  const first = active[0]
+  const last = active[active.length - 1]
   const bestVerdict =
     tastings.find((item) => item.verdict === '可直接装瓶')?.verdict ??
     tastings.find((item) => item.verdict === '需调配')?.verdict ??
@@ -85,12 +87,12 @@ export async function buildBatchArchive(batchId: string): Promise<BatchArchive> 
     mlf: mlf ? stripRevision(mlf) : null,
     tastings: tastings.map(stripRevision),
     summary: {
-      days: readings.length,
-      avgDeclinePerDay: readings.length > 1 ? Number((declineSum / (readings.length - 1)).toFixed(4)) : 0,
+      days: active.length,
+      avgDeclinePerDay: active.length > 1 ? Number((declineSum / (active.length - 1)).toFixed(4)) : 0,
       latestGravity: last ? last.gravity : 0,
       potentialAbv: first ? potentialAbv(first.gravity) : 0,
       estimatedAbv: first && last ? abvFromSg(first.gravity, last.gravity) : 0,
-      overTempDays: readings.filter((row) => isOverTemp(row.tempC)).length,
+      overTempDays: active.filter((row) => isOverTemp(row.tempC)).length,
       bestVerdict
     }
   }
