@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** /operations 倒罐与压帽作业编排：按日期排序、拖拽调序并指派操作人 */
+/** /operations 倒罐与压帽作业编排：按日期排序、拖拽调序、容量校验与待复核处理 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
@@ -7,9 +7,11 @@ import { Plus, Rank } from '@element-plus/icons-vue'
 import FilterBar from '@/components/common/FilterBar.vue'
 import StageTag from '@/components/common/StageTag.vue'
 import EmptyPanel from '@/components/common/EmptyPanel.vue'
-import { db, type BatchRow, type OperationRow, type ParcelRow } from '@/utils/db'
+import ConflictDialog from '@/components/common/ConflictDialog.vue'
+import { db, type BatchRow, type OperationRow, type ParcelRow, type ReadingRow, type TankRow } from '@/utils/db'
 import { useIdbTable } from '@/hooks/useIdbTable'
 import { useOperationStore } from '@/stores/operationStore'
+import { analyzeReadings } from '@/utils/trend'
 import { OPERATION_STATES, OPERATION_TYPES, createEmptyOperation, type Operation } from '@/types/operation'
 import type { FilterSelectConfig, FilterModel } from '@/types/filter'
 import { filtersToQuery } from '@/utils/query'
@@ -23,17 +25,53 @@ const { rows: operations, ready } = useIdbTable<OperationRow>(() => db.operation
 })
 const { rows: batches } = useIdbTable<BatchRow>(() => db.batches)
 const { rows: parcels } = useIdbTable<ParcelRow>(() => db.parcels)
+const { rows: tanks } = useIdbTable<TankRow>(() => db.tanks)
+const { rows: readings } = useIdbTable<ReadingRow>(() => db.readings, {
+  compare: (a, b) => a.date.localeCompare(b.date)
+})
 
 const selects: FilterSelectConfig[] = [
   { key: 'types', label: '作业类型', options: OPERATION_TYPES.map((item) => ({ label: item, value: item })) },
   { key: 'states', label: '状态', options: OPERATION_STATES.map((item) => ({ label: item, value: item })) }
 ]
 
+function batchOf(batchId: string): BatchRow | null {
+  return batches.value.find((item) => item.id === batchId) ?? null
+}
+
 function batchLabel(batchId: string): string {
-  const batch = batches.value.find((item) => item.id === batchId)
+  const batch = batchOf(batchId)
   if (!batch) return '批次已删除'
   const parcel = parcels.value.find((item) => item.id === batch.parcelId)
   return `${parcel ? parcel.name : '未知地块'} · ${batch.harvestDate}`
+}
+
+function tankCode(tankId: string): string {
+  if (!tankId) return '—'
+  return tanks.value.find((item) => item.id === tankId)?.code ?? '未知罐'
+}
+
+/** 目标罐剩余容量：容量 − 在罐批次占用（含已完成倒罐改绑进来的批次） */
+function remainingOf(tankId: string): number {
+  const tank = tanks.value.find((item) => item.id === tankId)
+  if (!tank) return 0
+  const used = batches.value
+    .filter((batch) => batch.tankId === tankId && batch.state !== '已出罐')
+    .reduce((sum, batch) => sum + batch.volumeL, 0)
+  return tank.capacityL - used
+}
+
+/** 排队工单实时的容量短差（升） */
+function shortfallOf(row: OperationRow): number {
+  const batch = batchOf(row.batchId)
+  if (!batch || !row.targetTankId) return 0
+  return Math.max(0, batch.volumeL - remainingOf(row.targetTankId))
+}
+
+/** 批次趋势维度是否可转罐（与读数页、版本链重算共用同一套判定） */
+function transferableOf(batchId: string): boolean {
+  const rows = readings.value.filter((row) => row.batchId === batchId)
+  return analyzeReadings(rows).transferable
 }
 
 const filtered = computed(() => {
@@ -57,6 +95,8 @@ const filtered = computed(() => {
 const summary = computed(() => ({
   total: filtered.value.length,
   planned: filtered.value.filter((item) => item.state === '计划').length,
+  queued: filtered.value.filter((item) => item.state === '排队中').length,
+  reviewing: filtered.value.filter((item) => item.state === '待复核').length,
   done: filtered.value.filter((item) => item.state === '已完成').length,
   totalMinutes: filtered.value.reduce((sum, item) => sum + item.durationMin, 0)
 }))
@@ -95,17 +135,43 @@ const form = reactive<Omit<Operation, 'id' | 'seq'>>(createEmptyOperation())
 
 const rules: FormRules = {
   batchId: [{ required: true, message: '请选择批次', trigger: 'change' }],
-  operator: [{ required: true, message: '请填写操作人', trigger: 'blur' }]
+  operator: [{ required: true, message: '请填写操作人', trigger: 'blur' }],
+  targetTankId: [
+    {
+      validator: (_rule, value, callback) => {
+        if (form.type === '倒罐' && !value) callback(new Error('倒罐作业必须选择目标罐'))
+        else callback()
+      },
+      trigger: 'change'
+    }
+  ]
 }
 
-function openCreate(): void {
+/** 倒罐目标罐候选：非清洗中、非源罐，并展示剩余容量 */
+const targetTankOptions = computed(() => {
+  const sourceTankId = batchOf(form.batchId)?.tankId ?? ''
+  return tanks.value
+    .filter((tank) => tank.state !== '清洗中' && tank.id !== sourceTankId)
+    .map((tank) => ({ ...tank, remainingL: remainingOf(tank.id) }))
+})
+
+/** 表单内实时容量短差 */
+const formShortfall = computed(() => {
+  if (form.type !== '倒罐' || !form.targetTankId) return 0
+  const batch = batchOf(form.batchId)
+  if (!batch) return 0
+  return Math.max(0, batch.volumeL - remainingOf(form.targetTankId))
+})
+
+async function openCreate(): Promise<void> {
   editingId.value = null
   Object.assign(form, createEmptyOperation())
   if (store.currentBatchId) form.batchId = store.currentBatchId
+  if (form.batchId) await store.syncBaseVersion(form.batchId)
   dialogVisible.value = true
 }
 
-function openEdit(row: OperationRow): void {
+async function openEdit(row: OperationRow): Promise<void> {
   editingId.value = row.id
   Object.assign(form, {
     batchId: row.batchId,
@@ -113,8 +179,11 @@ function openEdit(row: OperationRow): void {
     date: row.date,
     durationMin: row.durationMin,
     operator: row.operator,
-    state: row.state
+    state: row.state,
+    targetTankId: row.targetTankId,
+    invalidReason: row.invalidReason
   })
+  await store.syncBaseVersion(row.batchId)
   dialogVisible.value = true
 }
 
@@ -122,12 +191,20 @@ async function submit(): Promise<void> {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
   try {
-    if (editingId.value) {
-      await store.updateOperation(editingId.value, { ...form })
-      ElMessage.success('作业已更新')
+    const result = await store.saveOperation({
+      id: editingId.value,
+      batchId: form.batchId,
+      type: form.type,
+      date: form.date,
+      durationMin: form.durationMin,
+      operator: form.operator,
+      targetTankId: form.type === '倒罐' ? form.targetTankId : ''
+    })
+    if (!result) return // 版本冲突：冲突对话框已弹出
+    if (result.state === '排队中') {
+      ElMessage.warning(`容量不足，工单已排队等待：还差 ${result.shortfallL} L`)
     } else {
-      await store.createOperation({ ...form })
-      ElMessage.success('作业已排入队列')
+      ElMessage.success(editingId.value ? '作业已更新' : '作业已排入队列')
     }
     dialogVisible.value = false
   } catch (error) {
@@ -136,8 +213,27 @@ async function submit(): Promise<void> {
 }
 
 async function finish(row: OperationRow): Promise<void> {
-  await store.finish(row.id)
-  ElMessage.success('作业已完成，批次最近作业时间已回写')
+  try {
+    const ok = await store.finish(row)
+    if (!ok) return // 版本冲突
+    ElMessage.success('作业已完成，批次最近作业时间已回写')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '完成失败')
+  }
+}
+
+async function review(row: OperationRow): Promise<void> {
+  try {
+    const result = await store.review(row)
+    if (!result) return // 版本冲突
+    if (result.state === '排队中') {
+      ElMessage.warning(`复核后容量仍不足，还差 ${result.shortfallL} L，继续排队`)
+    } else {
+      ElMessage.success('工单已复核，恢复计划')
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '复核失败')
+  }
 }
 
 async function remove(row: OperationRow): Promise<void> {
@@ -146,8 +242,12 @@ async function remove(row: OperationRow): Promise<void> {
   } catch {
     return
   }
-  await store.deleteOperation(row.id)
-  ElMessage.success('作业已删除')
+  try {
+    const ok = await store.deleteOperation(row)
+    if (ok) ElMessage.success('作业已删除')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '删除失败')
+  }
 }
 
 function onFilterChange(next: FilterModel): void {
@@ -156,6 +256,8 @@ function onFilterChange(next: FilterModel): void {
 
 onMounted(() => {
   store.applyQuery(route.query)
+  // 窗口加载即快照全部批次版本：此后其它窗口的提交会让本窗口的保存判冲突
+  void store.syncAllBaseVersions()
 })
 
 watch(
@@ -172,7 +274,9 @@ watch(
     <div class="page__head">
       <div>
         <h2 class="page__title">倒罐与压帽作业编排</h2>
-        <p class="page__subtitle">按日期排班并拖拽调整先后顺序；标记完成后自动回写批次的最近作业时间。</p>
+        <p class="page__subtitle">
+          按日期排班并拖拽调整先后顺序；倒罐校验目标罐剩余容量，容量不足排队等待，读数变更后失效工单退回复核。
+        </p>
       </div>
       <el-button type="primary" :icon="Plus" @click="openCreate">新增作业</el-button>
     </div>
@@ -180,7 +284,9 @@ watch(
     <el-card shadow="never">
       <div class="metric-row">
         <el-tag type="info" effect="plain">作业 {{ summary.total }} 条</el-tag>
-        <el-tag type="warning" effect="plain">计划中 {{ summary.planned }}</el-tag>
+        <el-tag type="info" effect="plain">计划中 {{ summary.planned }}</el-tag>
+        <el-tag type="warning" effect="plain">排队中 {{ summary.queued }}</el-tag>
+        <el-tag type="danger" effect="plain">待复核 {{ summary.reviewing }}</el-tag>
         <el-tag type="success" effect="plain">已完成 {{ summary.done }}</el-tag>
         <el-tag effect="plain">合计工时 {{ summary.totalMinutes }} 分钟</el-tag>
         <el-select v-model="store.currentBatchId" clearable placeholder="全部批次" class="batch-filter" @change="store.select(store.currentBatchId)">
@@ -224,14 +330,24 @@ watch(
             <strong>{{ row.type }}</strong>
             <StageTag :value="row.state" size="small" />
             <el-tag size="small" effect="plain">{{ row.durationMin }} 分钟</el-tag>
+            <el-tag v-if="row.type === '倒罐'" size="small" type="warning" effect="plain">
+              → 罐 {{ tankCode(row.targetTankId) }}
+            </el-tag>
+            <el-tag v-if="row.state === '排队中'" size="small" type="danger" effect="plain">
+              还差 {{ shortfallOf(row) }} L
+            </el-tag>
           </div>
           <div class="op-item__meta">
-            {{ row.date }} · 操作人 {{ row.operator }} · {{ batchLabel(row.batchId) }}
+            {{ row.date }} · 操作人 {{ row.operator }} · {{ batchLabel(row.batchId) }} · v{{ row.version }}
+          </div>
+          <div v-if="row.state === '待复核' && row.invalidReason" class="op-item__reason">
+            {{ row.invalidReason }}
           </div>
         </div>
         <div class="op-item__actions">
           <el-button link size="small" :disabled="index === 0" @click="moveBy(index, -1)">上移</el-button>
           <el-button link size="small" :disabled="index === filtered.length - 1" @click="moveBy(index, 1)">下移</el-button>
+          <el-button v-if="row.state === '待复核'" link type="warning" size="small" @click="review(row)">复核</el-button>
           <el-button v-if="row.state === '计划'" link type="success" size="small" @click="finish(row)">完成</el-button>
           <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
@@ -256,6 +372,24 @@ watch(
             <el-radio-button v-for="item in OPERATION_TYPES" :key="item" :value="item">{{ item }}</el-radio-button>
           </el-radio-group>
         </el-form-item>
+        <el-form-item v-if="form.type === '倒罐'" label="目标罐" prop="targetTankId">
+          <el-select v-model="form.targetTankId" class="full" placeholder="选择目标罐（显示剩余容量）">
+            <el-option
+              v-for="item in targetTankOptions"
+              :key="item.id"
+              :label="`${item.code} · ${item.capacityL}L · 剩余 ${item.remainingL}L`"
+              :value="item.id"
+            />
+          </el-select>
+          <div class="form-hint">
+            <template v-if="form.batchId && !transferableOf(form.batchId)">
+              当前批次趋势未到位（需进入后发酵且未停滞），可转罐结论为「暂不可转罐」。
+            </template>
+            <template v-if="formShortfall > 0">
+              目标罐剩余容量不足，保存后将排队等待，还差 {{ formShortfall }} L。
+            </template>
+          </div>
+        </el-form-item>
         <el-form-item label="日期">
           <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" class="full" />
         </el-form-item>
@@ -265,17 +399,18 @@ watch(
         <el-form-item label="操作人" prop="operator">
           <el-input v-model="form.operator" placeholder="如：陈岩" />
         </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="form.state" class="full">
-            <el-option v-for="item in OPERATION_STATES" :key="item" :label="item" :value="item" />
-          </el-select>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submit">保存</el-button>
       </template>
     </el-dialog>
+
+    <ConflictDialog
+      :conflict="store.conflict"
+      @accept="store.acceptLatest()"
+      @close="store.clearConflict()"
+    />
   </div>
 </template>
 
@@ -294,6 +429,12 @@ watch(
 .batch-filter {
   width: 240px;
   margin-left: auto;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #b23b48;
+  line-height: 1.6;
 }
 
 .op-list {
@@ -336,12 +477,19 @@ watch(
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .op-item__meta {
   margin-top: 4px;
   font-size: 12px;
   color: #8c8479;
+}
+
+.op-item__reason {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #b23b48;
 }
 
 .op-item__actions {

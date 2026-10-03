@@ -1,9 +1,20 @@
 /**
  * 首次打开应用时灌入的演示数据
  * 只在 parcels 表为空时执行，地块 → 发酵罐 → 批次 → 读数/作业/苹乳/品评 三层互相引用，
+ * 并预置批次数据版本与初始变更日志（版本链可追溯），
  * 保证 6 个页面第一次进入都有可点通的内容。函数本身幂等：由调用方判定表是否为空。
  */
-import type { ParcelRow, TankRow, BatchRow, ReadingRow, OperationRow, MlfRow, TastingRow } from './db'
+import type {
+  ParcelRow,
+  TankRow,
+  BatchRow,
+  ReadingRow,
+  OperationRow,
+  MlfRow,
+  TastingRow,
+  ChangeLogRow,
+  BatchVersionRow
+} from './db'
 import { db, ROW_REVISION } from './db'
 
 function rev<T>(row: T): T & { revision: number; createdAt: number; updatedAt: number } {
@@ -57,28 +68,53 @@ const BATCHES: Array<Omit<BatchRow, 'revision' | 'createdAt' | 'updatedAt'>> = [
 ]
 
 const READINGS: Array<Omit<ReadingRow, 'revision' | 'createdAt' | 'updatedAt'>> = [
-  { id: 'r-001', batchId: 'b-001', date: '2024-09-12', gravity: 1.102, tempC: 24.5, brix: 24.5 },
-  { id: 'r-002', batchId: 'b-001', date: '2024-09-14', gravity: 1.078, tempC: 27.2, brix: 19.4 },
-  { id: 'r-003', batchId: 'b-001', date: '2024-09-16', gravity: 1.052, tempC: 31.4, brix: 13.1 },
-  { id: 'r-004', batchId: 'b-001', date: '2024-09-18', gravity: 1.03, tempC: 28.6, brix: 7.6 },
-  { id: 'r-005', batchId: 'b-002', date: '2024-09-15', gravity: 1.096, tempC: 23.1, brix: 23 },
-  { id: 'r-006', batchId: 'b-002', date: '2024-09-19', gravity: 1.04, tempC: 25.8, brix: 10.1 },
-  { id: 'r-007', batchId: 'b-002', date: '2024-09-24', gravity: 1.006, tempC: 22.4, brix: 1.6 },
-  { id: 'r-008', batchId: 'b-002', date: '2024-09-27', gravity: 1.002, tempC: 21.7, brix: 0.6 },
-  { id: 'r-009', batchId: 'b-003', date: '2024-09-20', gravity: 1.09, tempC: 19.8, brix: 21.5 },
-  { id: 'r-010', batchId: 'b-003', date: '2024-09-26', gravity: 1.02, tempC: 18.2, brix: 5.1 },
-  { id: 'r-011', batchId: 'b-003', date: '2024-10-05', gravity: 0.994, tempC: 16.5, brix: -1.5 }
+  { id: 'r-001', batchId: 'b-001', date: '2024-09-12', gravity: 1.102, tempC: 24.5, brix: 24.5, version: 1 },
+  { id: 'r-002', batchId: 'b-001', date: '2024-09-14', gravity: 1.078, tempC: 27.2, brix: 19.4, version: 1 },
+  { id: 'r-003', batchId: 'b-001', date: '2024-09-16', gravity: 1.052, tempC: 31.4, brix: 13.1, version: 1 },
+  { id: 'r-004', batchId: 'b-001', date: '2024-09-18', gravity: 1.03, tempC: 28.6, brix: 7.6, version: 1 },
+  { id: 'r-005', batchId: 'b-002', date: '2024-09-15', gravity: 1.096, tempC: 23.1, brix: 23, version: 1 },
+  { id: 'r-006', batchId: 'b-002', date: '2024-09-19', gravity: 1.04, tempC: 25.8, brix: 10.1, version: 1 },
+  { id: 'r-007', batchId: 'b-002', date: '2024-09-24', gravity: 1.006, tempC: 22.4, brix: 1.6, version: 1 },
+  { id: 'r-008', batchId: 'b-002', date: '2024-09-27', gravity: 1.002, tempC: 21.7, brix: 0.6, version: 1 },
+  { id: 'r-009', batchId: 'b-003', date: '2024-09-20', gravity: 1.09, tempC: 19.8, brix: 21.5, version: 1 },
+  { id: 'r-010', batchId: 'b-003', date: '2024-09-26', gravity: 1.02, tempC: 18.2, brix: 5.1, version: 1 },
+  { id: 'r-011', batchId: 'b-003', date: '2024-10-05', gravity: 0.994, tempC: 16.5, brix: -1.5, version: 1 }
 ]
 
 const OPERATIONS: Array<Omit<OperationRow, 'revision' | 'createdAt' | 'updatedAt'>> = [
-  { id: 'op-001', batchId: 'b-001', type: '压帽', date: '2024-09-13', durationMin: 30, operator: '陈岩', state: '已完成', seq: 1 },
-  { id: 'op-002', batchId: 'b-001', type: '淋皮', date: '2024-09-14', durationMin: 25, operator: '陈岩', state: '已完成', seq: 2 },
-  { id: 'op-003', batchId: 'b-001', type: '倒罐', date: '2024-09-18', durationMin: 55, operator: '林沐', state: '已完成', seq: 3 },
-  { id: 'op-004', batchId: 'b-001', type: '倒罐', date: '2024-09-26', durationMin: 50, operator: '林沐', state: '计划', seq: 4 },
-  { id: 'op-005', batchId: 'b-002', type: '压帽', date: '2024-09-16', durationMin: 30, operator: '周亦', state: '已完成', seq: 1 },
-  { id: 'op-006', batchId: 'b-002', type: '倒罐', date: '2024-09-21', durationMin: 60, operator: '周亦', state: '已完成', seq: 2 },
-  { id: 'op-007', batchId: 'b-002', type: '淋皮', date: '2024-09-24', durationMin: 20, operator: '许澜', state: '计划', seq: 3 },
-  { id: 'op-008', batchId: 'b-003', type: '倒罐', date: '2024-09-28', durationMin: 45, operator: '许澜', state: '已完成', seq: 1 }
+  {
+    id: 'op-001', batchId: 'b-001', type: '压帽', date: '2024-09-13', durationMin: 30, operator: '陈岩',
+    state: '已完成', seq: 1, targetTankId: '', invalidReason: null, version: 1
+  },
+  {
+    id: 'op-002', batchId: 'b-001', type: '淋皮', date: '2024-09-14', durationMin: 25, operator: '陈岩',
+    state: '已完成', seq: 2, targetTankId: '', invalidReason: null, version: 1
+  },
+  {
+    id: 'op-003', batchId: 'b-001', type: '倒罐', date: '2024-09-18', durationMin: 55, operator: '林沐',
+    state: '已完成', seq: 3, targetTankId: 'tk-001', invalidReason: null, version: 1
+  },
+  {
+    // 演示「排队中」：b-001 2600L 超过 F-03 剩余容量 1500L，还差 1100 L
+    id: 'op-004', batchId: 'b-001', type: '倒罐', date: '2024-09-26', durationMin: 50, operator: '林沐',
+    state: '排队中', seq: 4, targetTankId: 'tk-003', invalidReason: null, version: 1
+  },
+  {
+    id: 'op-005', batchId: 'b-002', type: '压帽', date: '2024-09-16', durationMin: 30, operator: '周亦',
+    state: '已完成', seq: 1, targetTankId: '', invalidReason: null, version: 1
+  },
+  {
+    id: 'op-006', batchId: 'b-002', type: '倒罐', date: '2024-09-21', durationMin: 60, operator: '周亦',
+    state: '已完成', seq: 2, targetTankId: 'tk-002', invalidReason: null, version: 1
+  },
+  {
+    id: 'op-007', batchId: 'b-002', type: '淋皮', date: '2024-09-24', durationMin: 20, operator: '许澜',
+    state: '计划', seq: 3, targetTankId: '', invalidReason: null, version: 1
+  },
+  {
+    id: 'op-008', batchId: 'b-003', type: '倒罐', date: '2024-09-28', durationMin: 45, operator: '许澜',
+    state: '已完成', seq: 1, targetTankId: 'tk-003', invalidReason: null, version: 1
+  }
 ]
 
 const MLFS: Array<Omit<MlfRow, 'revision' | 'createdAt' | 'updatedAt'>> = [
@@ -117,11 +153,34 @@ const TASTINGS: Array<Omit<TastingRow, 'revision' | 'createdAt' | 'updatedAt'>> 
   }
 ]
 
-/** 灌入演示数据（地块 → 罐 → 批次 → 读数/作业/苹乳/品评） */
+/** 批次数据版本：演示数据初始为 v1 */
+const BATCH_VERSIONS: BatchVersionRow[] = [
+  { batchId: 'b-001', version: 1, updatedAt: Date.now() },
+  { batchId: 'b-002', version: 1, updatedAt: Date.now() },
+  { batchId: 'b-003', version: 1, updatedAt: Date.now() }
+]
+
+/** 初始变更日志：版本链的起点 */
+const CHANGE_LOGS: Array<Omit<ChangeLogRow, 'revision' | 'createdAt' | 'updatedAt'>> = [
+  {
+    id: 'log-001', batchId: 'b-001', entity: 'batch', entityId: 'b-001', action: 'init',
+    date: '2024-09-12', label: '批次 b-001', detail: '演示数据初始录入', batchVersion: 1, at: Date.now()
+  },
+  {
+    id: 'log-002', batchId: 'b-002', entity: 'batch', entityId: 'b-002', action: 'init',
+    date: '2024-09-15', label: '批次 b-002', detail: '演示数据初始录入', batchVersion: 1, at: Date.now()
+  },
+  {
+    id: 'log-003', batchId: 'b-003', entity: 'batch', entityId: 'b-003', action: 'init',
+    date: '2024-09-20', label: '批次 b-003', detail: '演示数据初始录入', batchVersion: 1, at: Date.now()
+  }
+]
+
+/** 灌入演示数据（地块 → 罐 → 批次 → 读数/作业/苹乳/品评 → 版本链） */
 export async function seedDatabase(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.parcels, db.tanks, db.batches, db.readings, db.operations, db.mlfs, db.tastings],
+    [db.parcels, db.tanks, db.batches, db.readings, db.operations, db.mlfs, db.tastings, db.changeLogs, db.batchVersions],
     async () => {
       await db.parcels.bulkPut(PARCELS.map(rev))
       await db.tanks.bulkPut(TANKS.map(rev))
@@ -130,6 +189,8 @@ export async function seedDatabase(): Promise<void> {
       await db.operations.bulkPut(OPERATIONS.map(rev))
       await db.mlfs.bulkPut(MLFS.map(rev))
       await db.tastings.bulkPut(TASTINGS.map(rev))
+      await db.changeLogs.bulkPut(CHANGE_LOGS.map(rev))
+      await db.batchVersions.bulkPut(BATCH_VERSIONS)
     }
   )
 }

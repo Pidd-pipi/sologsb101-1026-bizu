@@ -1,4 +1,8 @@
-/** 发酵读数：逐日记录比重、温度与糖度 */
+/**
+ * 发酵读数：逐日记录比重、温度与糖度。
+ * 唯一性：同一批次同一日期只允许一条读数（数据库层 &[batchId+date] 唯一索引强制），
+ * 补录历史读数时同日覆盖更新，改动或撤回后从受影响日期起重算趋势结论。
+ */
 export interface Reading {
   id: string
   /** 所属批次 */
@@ -11,14 +15,6 @@ export interface Reading {
   tempC: number
   /** 糖度 °Bx */
   brix: number
-}
-
-/** 趋势点：在读数基础上派生下降速率与超温标记 */
-export interface ReadingPoint extends Reading {
-  /** 相对上一条读数的比重日下降速率 */
-  declinePerDay: number
-  /** 是否超温（> 30 ℃） */
-  overTemp: boolean
 }
 
 /** 超温阈值 ℃ */

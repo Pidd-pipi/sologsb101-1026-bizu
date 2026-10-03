@@ -16,6 +16,7 @@ import {
   updateTank,
   ROW_REVISION
 } from '@/utils/db'
+import { requeueWaitingOps } from '@/utils/transfer'
 import { createId } from '@/utils/uuid'
 import { queryToFilters } from '@/utils/query'
 
@@ -74,11 +75,14 @@ export const useBatchStore = defineStore('batch', () => {
   async function deleteBatch(id: string): Promise<void> {
     await removeBatch(id)
     if (currentBatchId.value === id) currentBatchId.value = null
+    // 批次删除释放容量，排队工单可能可以转正
+    await requeueWaitingOps()
   }
 
-  /** 出罐：释放罐位并归档批次 */
-  async function ship(id: string): Promise<void> {
+  /** 出罐：释放罐位并归档批次；容量释放后重估排队工单 */
+  async function ship(id: string): Promise<number> {
     await shipBatchRow(id)
+    return requeueWaitingOps()
   }
 
   return {

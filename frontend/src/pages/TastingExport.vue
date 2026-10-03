@@ -347,7 +347,7 @@ watch(
             <el-descriptions-item label="地块/罐">{{ dbCounts.parcels ?? 0 }} / {{ dbCounts.tanks ?? 0 }}</el-descriptions-item>
             <el-descriptions-item label="批次/读数">{{ dbCounts.batches ?? 0 }} / {{ dbCounts.readings ?? 0 }}</el-descriptions-item>
             <el-descriptions-item label="作业/苹乳">{{ dbCounts.operations ?? 0 }} / {{ dbCounts.mlfs ?? 0 }}</el-descriptions-item>
-            <el-descriptions-item label="品评">{{ dbCounts.tastings ?? 0 }}</el-descriptions-item>
+            <el-descriptions-item label="品评/日志">{{ dbCounts.tastings ?? 0 }} / {{ dbCounts.changeLogs ?? 0 }}</el-descriptions-item>
           </el-descriptions>
           <div class="btn-row">
             <el-button :icon="Download" @click="exportLibrary">导出整库 JSON</el-button>
